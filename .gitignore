@@ -1,3 +1,9 @@
+# Config
+config.js
+
+# Cache
+/cache
+
 # Logs
 logs
 *.log

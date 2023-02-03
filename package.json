@@ -1,0 +1,28 @@
+{
+  "name": "osmosis-externals-monitor",
+  "version": "1.0.0",
+  "description": "Monitor liquidity pool external incentives on the osmosis.zone appchain",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jasbanza/osmosis-externals-monitor.git"
+  },
+  "keywords": [
+    "osmosis"
+  ],
+  "author": "jasbanza",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jasbanza/osmosis-externals-monitor/issues"
+  },
+  "homepage": "https://github.com/jasbanza/osmosis-externals-monitor#readme",
+  "dependencies": {
+    "js-console-log-colors": "^1.1.0",
+    "jsondiffpatch": "^0.4.1",
+    "node-fetch": "^2.6.9"
+  }
+}
