@@ -92,6 +92,10 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
     // 7. overwrite old indexed gauges with new one
     save_oldIndexedGauges();
 
+    if (config.TG_BOT.ACTIVE) {
+      doTelegramNotifications(arrNotableEvents);
+    }
+
     /* EVERYTHING BELOW THIS LINE IS OLD AND NEEDS TO BE REFACTORED AND MOVED ABOVE */
     /*
     
@@ -354,7 +358,7 @@ function processDeltas(indexedDeltas, indexedGauges) {
         }
       }
 
-      const res = gauge_isNew(delta);
+      const res = gauge_isNew(delta, indexedGauges);
       if (res) {
         arrNotableEvents.push(res);
       }
@@ -372,9 +376,11 @@ function gauge_isNearExpiration(gauge, filled_epochs) {
     if (gauge.is_perpetual) return false;
     const bondDurationDays = gauge.distribute_to.duration.slice(0, -1) / 86400;
     const remainingDays = gauge.num_epochs_paid_over - gauge.filled_epochs;
+    const poolId = getPoolIdFromGauge(gauge);
     if (bondDurationDays == remainingDays) {
       return {
-        event: "NEAR_EXPIRATION",
+        type: "NEAR_EXPIRATION",
+        poolId: poolId,
         bondDurationDays: bondDurationDays,
         remainingDays: remainingDays,
         gauge: gauge,
@@ -386,44 +392,191 @@ function gauge_isNearExpiration(gauge, filled_epochs) {
   }
 }
 
-function gauge_isNew(gauge) {
+function gauge_isNew(delta, indexedGauges) {
   try {
     // basic check
-    if (gauge?.id) {
+    if (delta?.id) {
+      const gauge = indexedGauges[delta.id];
+      const poolId = getPoolIdFromGauge(gauge);
       const currentTime = new Date();
       const targetTime = new Date(gauge.start_time);
 
       const timeDifference = targetTime - currentTime;
       const daysUntilTimestamp = timeDifference / (1000 * 60 * 60 * 24);
 
-      const bondDurationDays = gauge.distribute_to[0].duration.slice(0, -1) / 86400;
+      const bondDurationDays =
+        gauge.distribute_to.duration.slice(0, -1) / 86400;
       const remainingDays = gauge.num_epochs_paid_over - gauge.filled_epochs;
 
-      return {
-        event: "NEW_GAUGE",
-        bondDurationDays: bondDurationDays,
-        remainingDays: remainingDays,
-        startsInDays: daysUntilTimestamp.toFixed(0),
-        gauge: gauge,
-      };
+      if (remainingDays >= 0) {
+        // gaugeType
+        let type = "NEW_EXTERNAL_GAUGE";
+
+        // CHECK FOR NEW SUPERFLUID POOLS
+        if (gauge.distribute_to?.denom?.includes("superbonding")) {
+          // only if it is the first "superbonding" for the pool...
+          for (const id in indexedGauges) {
+            if (id !== gauge.id) {
+              if (
+                indexedGauges[id].distribute_to.denom.includes(
+                  `/${poolId}/superbonding`
+                )
+              ) {
+                return;
+              }
+            }
+          }
+          type = "NEW_SUPERFLUID_GAUGE";
+        } else if (gauge.is_perpetual && gauge.coins[0]?.denom == "uosmo") {
+          // new gauge AND it has internal incentives loaded (might never reach here due to governance requirement, but just in case)
+          type = "NEW_INTERNAL_GAUGE";
+        } else if (gauge.is_perpetual && !gauge.coins[0]) {
+          // can ignore - placeholder (empty) gauge for internal incentives
+          return;
+        }
+
+        return {
+          type: type,
+          poolId: poolId,
+          bondDurationDays: bondDurationDays,
+          remainingDays: remainingDays,
+          startsInDays: daysUntilTimestamp.toFixed(0),
+          gauge: gauge,
+        };
+      }
     }
     return;
   } catch (error) {
     out.error(error);
-    console.log(gauge);
     return;
   }
 }
 
-// function saveState({  }){
-//   fs.writeFile("state.json", JSON.stringify(json), (err) => {
-//     if (err) {
-//       console.error(err);
-//       return;
-//     }
-//     console.log("Saved to local file...");
-//   });
-// }
+function getPoolIdFromGauge(gauge) {
+  try {
+    const match = gauge.distribute_to.denom.match(/\d+/); // matches one or more digits
+    return (match ? parseInt(match[0]) : NaN).toString(); // convert first matched digits to number
+  } catch (error) {
+    out.error(error);
+    return NaN.toString();
+  }
+}
+
+function doTelegramNotifications(arrNotableEvents) {
+  if (config.DEBUG) {
+    out.debug("called function: doTelegramNotifications()");
+  }
+
+  arrNotableEvents.forEach((event) => {
+    let txt = null;
+    switch (event.type) {
+      case "NEAR_EXPIRATION":
+        txt = `<i>⚠️ LP Incentives expiring soon!</i>`;
+        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
+        txt += `\nUnbonding duration: <b>${event.bondDurationDays} days</b>`;
+        txt += `\nRemaining incentives: <b>${event.remainingDays} days</b>`;
+        break;
+      case "NEW_EXTERNAL_GAUGE":
+        txt = `<i>💰 New External Incentives Added!</i>`;
+        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
+        txt += `\nUnbonding duration: <b>${event.bondDurationDays} days</b>`;
+        try {
+          const timeUntilEpoch = timeUntilEpoch_fromStartTime(
+            event.gauge.start_time
+          );
+          txt += `\nNext epoch in: <b>${timeUntilEpoch}</b>`;
+        } catch (error) {
+          out.error(error);
+        }
+        txt += `\nIncentive duration: <b>${event.remainingDays} days</b>`;
+        break;
+      case "NEW_INTERNAL_GAUGE":
+        txt = `<i>💰 New Internal (🧪 $OSMO) Incentives Added!</i>`;
+        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
+        txt += `\nUnbonding duration: <b>${event.bondDurationDays} days</b>`;
+        try {
+          const timeUntilEpoch = timeUntilEpoch_fromStartTime(
+            event.gauge.start_time
+          );
+          txt += `\nNext epoch in: <b>${timeUntilEpoch}</b>`;
+        } catch (error) {
+          out.error(error);
+        }
+        txt += `\nIncentive duration: <b>${event.remainingDays} days</b>`;
+        break;
+      case "NEW_SUPERFLUID_GAUGE":
+        txt = `<i>🌟 Superfluid Staking Enabled!</i>`;
+        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
+        break;
+      default:
+        break;
+    }
+    if (txt) {
+      doTelegramNotification(txt);
+    }
+  });
+}
+
+// this tells the telegram bot to send a message...
+function doTelegramNotification(text = "") {
+  if (config.DEBUG) {
+    out.debug("called function: doTelegramNotification()");
+  }
+
+  config.TG_BOT.GROUP_IDS.forEach((groupId) => {
+    const json_body = {
+      chat_id: groupId,
+      text: text,
+    };
+
+    fetch(
+      `https://api.telegram.org/bot${config.TG_BOT.TOKEN}/sendMessage?parse_mode=html`,
+      {
+        method: "POST",
+        body: JSON.stringify(json_body),
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    )
+      .then((res) => res.json())
+      .then((json) => {
+        if (!json?.ok) {
+          out.error("Unable to send Telegram notification:");
+          console.log(json);
+        } else {
+          out.success("Telegram notification sent!");
+        }
+      });
+  });
+}
+
+function timeUntilEpoch_fromStartTime(strStartTime) {
+  const currentDate = new Date();
+  let startDate = new Date(strStartTime);
+
+  // if it is in the past... set to today
+  if (startDate.getTime() < currentDate.getTime()) {
+    startDate = currentDate;
+  }
+
+  const startingEpoch = new Date(startDate); // Make a copy of the current date
+
+  // Set the hours to 19 (7pm) and the minutes, seconds and milliseconds to 0
+  startingEpoch.setHours(config.EPOCH_HOUR, 16, 0, 0);
+
+  // If the next 7pm is not on the same day as the current date, add a day
+  if (startingEpoch <= startDate) {
+    startingEpoch.setDate(startingEpoch.getDate() + 1);
+  }
+
+  const duration = startingEpoch.getTime() - currentDate.getTime(); // Get the duration in milliseconds
+  const days = Math.floor(duration / (1000 * 60 * 60 * 24)); // Calculate the number of days
+  const hours = Math.floor((duration / (1000 * 60 * 60)) % 24); // Calculate the number of hours
+  const minutes = Math.floor((duration / (1000 * 60)) % 60); // Calculate the number of minutes
+
+  return `${days}d, ${hours}h, ${minutes}m`;
+}
 
 (() => {
   function cleanUp(eventType) {
