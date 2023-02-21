@@ -1,1 +1,15 @@
-monitor notable events
+GENERAL:
+done - initializeFiles
+ - seperate try...catch for each step
+
+DENOMS:	
+done - get assetlist for cross-referencing names
+done - display pool assets names
+done - display pool reward token names
+
+API CALLS:
+(TEST) - if fail, use backup endpoint (cosmos.directory load balanced public nodes)
+
+INFRA:
+(TEST) - investigate crontab not working 
+(changed cache file write permissions ... need to test later)

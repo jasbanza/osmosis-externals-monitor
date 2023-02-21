@@ -19,6 +19,14 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
   } else {
     console.clear();
   }
+
+  try {
+    await initializeFiles();
+  } catch (error) {
+    out.error(error);
+    process.exit(0);
+  }
+
   try {
     // 1. Fetch Gauges... This also overwrites the "gauges.json" file.
     out.command("1. Get new gauges");
@@ -37,15 +45,16 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
     }
 
     // 2. Get old gauges from gauges-old.json file
-    out.command("2. Get old gauges");
-    const oldGauges = await getOldGaugesFromCache();
-    if (!oldGauges?.data) {
-      out.error("gauges-old.json is empty.");
+    // out.command("2. Get old gauges");
+    // const oldGauges = await getOldGaugesFromCache();
+    // if (!oldGauges?.data) {
+    //   // if old gauges doesn't exist, clone it from new gauges and exit with no deltas
+    //   out.error("gauges-old.json is empty.");
 
-      save_oldGauges();
-      out.info("Old and new files are the same! Exiting...");
-      process.exit(0);
-    }
+    //   save_oldGauges();
+    //   out.info("Old and new files are the same! Exiting...");
+    //   process.exit(0);
+    // }
 
     // 3. map to nested object with gaugeID as key (new "indexed" json file)
     const indexedGauges = {};
@@ -86,7 +95,7 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
 
     // 4. business logic from deltas
     out.command("4. process deltas");
-    const arrNotableEvents = processDeltas(deltas, indexedGauges);
+    const arrNotableEvents = await processDeltas(deltas, indexedGauges);
     overwriteNotableEventsFile({ data: arrNotableEvents });
 
     // 7. overwrite old indexed gauges with new one
@@ -117,7 +126,7 @@ function isRateLimitCheckOk() {
   try {
     const stats = fs.statSync("./cache/gauges.json");
     let ageInSeconds = (Date.now() - stats.mtime.getTime()) / 1000;
-    return ageInSeconds > config.API_QUERY.RATE_LIMIT_SECONDS;
+    return ageInSeconds > config.API.RATE_LIMIT_SECONDS;
   } catch (error) {
     out.error(error);
     return true;
@@ -143,7 +152,7 @@ async function fetchGauges() {
     out.command("Fetch gauges...");
   } else {
     out.warn(
-      `Rate limit exceeded. Please wait ${config.RATE_LIMIT_SECONDS} seconds before trying again, or change the RATE_LIMIT_SECONDS in the config.json`
+      `Rate limit exceeded. Please wait ${config.API.RATE_LIMIT_SECONDS} seconds before trying again, or change the API.RATE_LIMIT_SECONDS in the config.json`
     );
     process.exit(0);
   }
@@ -158,12 +167,13 @@ async function fetchGauges() {
     data = getNewGaugesFromCache();
   } else {
     out.info("Fetching new data from API (this may take a moment)...");
-    data = await fetch(`${config.API_QUERY.URL}`).then((res) => res.json());
+    data = await callAPI(
+      "/osmosis/incentives/v1beta1/gauges?pagination.limit=9999"
+    ).then((res) => res.json());
     out.success("Data fetched from API!");
   }
 
   // before we save the new gauges, lets update the "old" gauges to show the previous "new" gauges...
-  save_oldGauges();
   save_oldIndexedGauges();
 
   // 3. Write to file: gauges.json
@@ -253,18 +263,6 @@ function get_oldIndexedGauges() {
   }
 }
 
-async function getOldGaugesFromCache() {
-  if (config.DEBUG) {
-    out.debug("called function: getOldGaugesFromCache()");
-  }
-  try {
-    let fileContent = fs.readFileSync("./cache/gauges-old.json");
-    return JSON.parse(fileContent);
-  } catch (err) {
-    out.error(err);
-  }
-}
-
 function getNewGaugesFromCache() {
   if (config.DEBUG) {
     out.debug("called function: getNewGaugesFromCache()");
@@ -274,30 +272,6 @@ function getNewGaugesFromCache() {
     return JSON.parse(fileContent);
   } catch (err) {
     out.error(err);
-  }
-}
-
-function save_oldGauges() {
-  if (config.DEBUG) {
-    out.debug("called function: save_oldGauges()");
-  }
-  if (config.BEHAVIOR.SKIP_SAVE_OLD_GAUGES) {
-    if (config.DEBUG) {
-      out.debug(
-        "config.BEHAVIOR.SKIP_SAVE_OLD_GAUGES == true ... not saving gauges-old.json!"
-      );
-    }
-  } else {
-    out.command("Overwrite gauges-old.json with gauges.json");
-    try {
-      fs.copyFileSync("./cache/gauges.json", "./cache/gauges-old.json");
-      out.success("gauges-old.json overwritten with new file.");
-      return true;
-    } catch (err) {
-      out.error("Error updating file gauges-old.json");
-      out.error(err);
-      return false;
-    }
   }
 }
 
@@ -336,7 +310,7 @@ function overwriteNotableEventsFile(data) {
  * @param {*} indexedDeltas gauge-id indexed deltas json object
  * @param {*} indexedGauges latest indexed-gauges.json. Used for cross referencing.
  */
-function processDeltas(indexedDeltas, indexedGauges) {
+async function processDeltas(indexedDeltas, indexedGauges) {
   if (config.DEBUG) {
     out.debug("called function: processDeltas()");
   }
@@ -358,7 +332,7 @@ function processDeltas(indexedDeltas, indexedGauges) {
         }
       }
 
-      const res = gauge_isNew(delta, indexedGauges);
+      const res = await gauge_isNew(delta, indexedGauges);
       if (res) {
         arrNotableEvents.push(res);
       }
@@ -371,16 +345,19 @@ function processDeltas(indexedDeltas, indexedGauges) {
 
 // TODO: implement config.NOTIFICATIONS
 
-function gauge_isNearExpiration(gauge, filled_epochs) {
+async function gauge_isNearExpiration(gauge, filled_epochs) {
   try {
     if (gauge.is_perpetual) return false;
     const bondDurationDays = gauge.distribute_to.duration.slice(0, -1) / 86400;
     const remainingDays = gauge.num_epochs_paid_over - gauge.filled_epochs;
     const poolId = getPoolIdFromGauge(gauge);
+
+    const poolInfo = await getPoolInfo(poolId);
     if (bondDurationDays == remainingDays) {
       return {
         type: "NEAR_EXPIRATION",
         poolId: poolId,
+        poolAssetSymbols: poolInfo.poolAssetSymbols,
         bondDurationDays: bondDurationDays,
         remainingDays: remainingDays,
         gauge: gauge,
@@ -392,12 +369,14 @@ function gauge_isNearExpiration(gauge, filled_epochs) {
   }
 }
 
-function gauge_isNew(delta, indexedGauges) {
+async function gauge_isNew(delta, indexedGauges) {
   try {
     // basic check
     if (delta?.id) {
       const gauge = indexedGauges[delta.id];
       const poolId = getPoolIdFromGauge(gauge);
+      const poolInfo = await getPoolInfo(poolId);
+      const coins = await getCoinsInfo(gauge.coins);
       const currentTime = new Date();
       const targetTime = new Date(gauge.start_time);
 
@@ -434,10 +413,11 @@ function gauge_isNew(delta, indexedGauges) {
           // can ignore - placeholder (empty) gauge for internal incentives
           return;
         }
-
         return {
           type: type,
           poolId: poolId,
+          coins: coins,
+          poolAssetSymbols: poolInfo.poolAssetSymbols,
           bondDurationDays: bondDurationDays,
           remainingDays: remainingDays,
           startsInDays: daysUntilTimestamp.toFixed(0),
@@ -472,47 +452,309 @@ function doTelegramNotifications(arrNotableEvents) {
     switch (event.type) {
       case "NEAR_EXPIRATION":
         txt = `<i>⚠️ LP Incentives expiring soon!</i>`;
-        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
+        txt += `\n\n🧪 Pool <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
         txt += `\nUnbonding duration: <b>${event.bondDurationDays} days</b>`;
-        txt += `\nRemaining incentives: <b>${event.remainingDays} days</b>`;
+        txt += `\nRemaining rewards: <b>${event.remainingDays} days</b>`;
         break;
       case "NEW_EXTERNAL_GAUGE":
-        txt = `<i>💰 New External Incentives Added!</i>`;
-        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
-        txt += `\nUnbonding duration: <b>${event.bondDurationDays} days</b>`;
+        txt = `<i>New External Incentives Added!</i>`;
+        txt += `\n\n🧪 Pool <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
+        txt += `\n⏳ Unbonding: <b>${event.bondDurationDays} days</b>`;
+        if (event.coins) {
+          txt += `\n\n💰 Rewards: `;
+          for (const coin of event.coins) {
+            if (event.coins.length > 1) {
+              txt += `\n`;
+            }
+            txt += `<b>${coin.amount / Math.pow(10, coin.exponent)} $${
+              coin.symbol
+            }</b>`;
+          }
+          
+          if (event.coins.length > 1) {
+            txt += `\n - `;
+          }
+          txt += ` <i>over ${event.gauge.num_epochs_paid_over} days</i>`;
+        }
+
+        txt += `\n\n📆 Remaining: <b>${event.remainingDays} days</b>`;
+
         try {
           const timeUntilEpoch = timeUntilEpoch_fromStartTime(
             event.gauge.start_time
           );
-          txt += `\nNext epoch in: <b>${timeUntilEpoch}</b>`;
+          txt += `\n⏰ Next Distribution in: <b>${timeUntilEpoch}</b>`;
         } catch (error) {
           out.error(error);
         }
-        txt += `\nIncentive duration: <b>${event.remainingDays} days</b>`;
         break;
       case "NEW_INTERNAL_GAUGE":
         txt = `<i>💰 New Internal (🧪 $OSMO) Incentives Added!</i>`;
-        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
+        txt += `\n\n<b>Pool <a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
         txt += `\nUnbonding duration: <b>${event.bondDurationDays} days</b>`;
         try {
           const timeUntilEpoch = timeUntilEpoch_fromStartTime(
             event.gauge.start_time
           );
-          txt += `\nNext epoch in: <b>${timeUntilEpoch}</b>`;
+          txt += `\nReward distribution in: <b>${timeUntilEpoch}</b>`;
         } catch (error) {
           out.error(error);
         }
-        txt += `\nIncentive duration: <b>${event.remainingDays} days</b>`;
+        txt += `\nRemaining rewards: <b>${event.remainingDays} days</b>`;
         break;
       case "NEW_SUPERFLUID_GAUGE":
         txt = `<i>🌟 Superfluid Staking Enabled!</i>`;
-        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId}</a></b>`;
+        txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
         break;
       default:
         break;
     }
     if (txt) {
       doTelegramNotification(txt);
+    }
+  });
+}
+
+/**
+ * creates and returns an API fetch response.
+ * @param {String} path path to REST method after the baseURL
+ * @returns {Promise} unresolved fetch promise
+ */
+async function callAPI(path) {
+  let res = {};
+  try {
+    res = await fetch(config.API.URL + path);
+  } catch (error) {
+    out.error(error);
+    try {
+      res = await fetch(config.API.FAILOVER_URL + path);
+    } catch (error) {
+      out.error(error);
+    }
+  }
+  return res;
+}
+
+async function getCoinsInfo(coins) {
+  const arrCoinsInfo = [];
+  for (const coin of coins) {
+    let coinInfo = coin;
+    // NATIVE
+    if (coin.denom == "uosmo") {
+      coinInfo.symbol = "OSMO";
+      coinInfo.exponent = 6;
+      arrCoinsInfo.push(coinInfo);
+      continue;
+    }
+    if (coin.denom == "uion") {
+      coinInfo.symbol = "ION";
+      coinInfo.exponent = 6;
+      arrCoinsInfo.push(coinInfo);
+      continue;
+    }
+
+    // IBC ASSET
+    if (coin.denom.includes("ibc/")) {
+      let lookup = await assetLookupFromAssetlist(coin.denom);
+      if (!lookup.symbol) {
+        lookup = await ibcBaseDenomLookup(coin.denom);
+      }
+      coinInfo = { ...coinInfo, ...lookup };
+      arrCoinsInfo.push(coinInfo);
+      continue;
+    }
+
+    // GAMM
+    if (coin.denom.includes("gamm/pool")) {
+      coinInfo.symbol = coin.denom;
+      arrCoinsInfo.push(coinInfo);
+      continue;
+    }
+
+    // TOKENFACTORY
+    if (coin.denom.includes("factory")) {
+      coinInfo.symbol = coin.denom;
+      arrCoinsInfo.push(coinInfo);
+      continue;
+    }
+  }
+  return arrCoinsInfo;
+}
+
+async function getPoolInfo(poolId) {
+  try {
+    const json = await callAPI("/osmosis/gamm/v1beta1/pools/" + poolId).then(
+      (res) => res.json()
+    );
+
+    // get denoms from pool:
+    let arrDenoms = [];
+    if (/* normal pool */ json?.pool?.pool_assets) {
+      for (const asset of json.pool.pool_assets) {
+        arrDenoms.push(asset.token.denom);
+      }
+    } else if (/* stable pool */ json?.pool?.pool_liquidity) {
+      for (const asset of json.pool.pool_liquidity) {
+        arrDenoms.push(asset.denom);
+      }
+    }
+    // get pretty names if possible
+    const poolAssetSymbols = [];
+    for (const denom of arrDenoms) {
+      // pool can contain ibc tokens, tokenfactory tokens, gamms, native...
+
+      // NATIVE
+      if (denom == "uosmo") {
+        poolAssetSymbols.push("OSMO");
+        continue;
+      }
+      if (denom == "uion") {
+        poolAssetSymbols.push("ION");
+        continue;
+      }
+
+      // IBC ASSET
+      if (denom.includes("ibc/")) {
+        let lookup = await assetLookupFromAssetlist(denom);
+        if (!lookup?.symbol) {
+          lookup = await ibcBaseDenomLookup(denom);
+        }
+
+        poolAssetSymbols.push(lookup.symbol);
+        continue;
+      }
+
+      // GAMM
+      if (denom.includes("gamm/pool")) {
+        poolAssetSymbols.push(denom);
+        continue;
+      }
+
+      // TOKENFACTORY
+      if (denom.includes("factory")) {
+        poolAssetSymbols.push(denom);
+        continue;
+      }
+    }
+
+    // return the data
+    return {
+      poolAssetSymbols: poolAssetSymbols.join(" / "),
+    };
+  } catch (error) {
+    out.error(error);
+  }
+}
+
+async function ibcBaseDenomLookup(denom) {
+  const denom_hex = denom.slice(4);
+  const json = await callAPI(
+    "/ibc/apps/transfer/v1/denom_traces/" + denom_hex
+  ).then((res) => res.json());
+
+  return { symbol: json?.denom_trace?.base_denom };
+}
+
+async function assetLookupFromAssetlist(denom) {
+  const assetlist = await getAssetList();
+  for (const asset of assetlist.assets) {
+    if (asset["base"] == denom) {
+      return {
+        symbol: asset?.symbol,
+        exponent: asset?.denom_units[1]?.exponent,
+      };
+    }
+  }
+}
+
+/**
+ * return assetlist from cache, or fetch from API if older than config.API.ASSETLIST_CACHE_SECONDS
+ * @returns {Object} assetlist
+ */
+async function getAssetList() {
+  let assetlist;
+  const filename = "./cache/assetlist.json";
+
+  // check if assetlist has expired
+  try {
+    const stats = fs.statSync(filename);
+    if (
+      (Date.now() - stats.mtime.getTime()) / 1000 >
+      config.ASSETLIST_CACHE_SECONDS
+    ) {
+      return fetchFromAPI();
+    }
+  } catch (error) {
+    out.error(`Unable to read ${filename}`);
+    out.error(error);
+    process.exit(0);
+  }
+
+  // check if assetlist is empty
+  try {
+    let fileContent = fs.readFileSync(filename);
+    assetlist = JSON.parse(fileContent);
+    if (Object.keys(assetlist).length === 0) {
+      return fetchFromAPI();
+    }
+  } catch (err) {
+    out.error(`Error parsing ${filename}`);
+    out.error(err);
+    process.exit(0);
+  }
+
+  return assetlist;
+
+  async function fetchFromAPI() {
+    let assetlist;
+    if (config.DEBUG) {
+      out.debug("Updating assetlist.json from API and saving to cache...");
+    }
+    try {
+      assetlist = await fetch(
+        "https://raw.githubusercontent.com/osmosis-labs/assetlists/main/osmosis-1/osmosis-1.assetlist.json",
+        {
+          cache: "reload",
+        }
+      ).then((res) => res.json());
+    } catch (error) {
+      out.error("Unable to fetch assetlist from github:");
+      out.error(err.message);
+    }
+
+    if (assetlist) {
+      // save to cache
+      try {
+        fs.writeFileSync(filename, JSON.stringify(assetlist));
+        out.success("Assetlist updated!");
+      } catch (err) {
+        out.error("Unable to save assetlist.json:");
+        out.error(err.message);
+        return;
+      }
+    }
+    return assetlist;
+  }
+}
+
+async function initializeFiles() {
+  [
+    "./cache/assetlist.json",
+    "./cache/deltas.json",
+    "./cache/gauges.json",
+    "./cache/indexed-gauges-old.json",
+    "./cache/indexed-gauges.json",
+    "./cache/notable-events.json",
+  ].forEach((filename) => {
+    try {
+      if (!fs.existsSync(filename)) {
+        fs.writeFileSync(filename, "{}");
+        out.success(`File '${filename}' created successfully!`);
+      }
+    } catch (error) {
+      out.error(`initializeFiles: ${filename}`);
+      out.error(error);
+      process.exit(0);
     }
   });
 }
@@ -530,7 +772,7 @@ function doTelegramNotification(text = "") {
     };
 
     fetch(
-      `https://api.telegram.org/bot${config.TG_BOT.TOKEN}/sendMessage?parse_mode=html`,
+      `https://api.telegram.org/bot${config.TG_BOT.TOKEN}/sendMessage?parse_mode=html&disable_web_page_preview=true `,
       {
         method: "POST",
         body: JSON.stringify(json_body),
@@ -543,7 +785,6 @@ function doTelegramNotification(text = "") {
       .then((json) => {
         if (!json?.ok) {
           out.error("Unable to send Telegram notification:");
-          console.log(json);
         } else {
           out.success("Telegram notification sent!");
         }
