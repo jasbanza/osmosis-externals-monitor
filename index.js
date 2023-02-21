@@ -277,6 +277,7 @@ function get_oldIndexedGauges() {
     let fileContent = fs.readFileSync("./cache/indexed-gauges-old.json");
     return JSON.parse(fileContent);
   } catch (err) {
+    out.error("Error in get_oldIndexedGauges():");
     out.error(err);
     return {};
   }
@@ -290,6 +291,7 @@ function getNewGaugesFromCache() {
     let fileContent = fs.readFileSync("./cache/gauges.json");
     return JSON.parse(fileContent);
   } catch (err) {
+    out.error("Error in getNewGaugesFromCache():");
     out.error(err);
   }
 }
@@ -383,6 +385,7 @@ async function gauge_isNearExpiration(gauge, filled_epochs) {
       };
     }
   } catch (error) {
+    out.error("Error in gauge_isNearExpiration():");
     out.error(error);
     return;
   }
@@ -446,6 +449,7 @@ async function gauge_isNew(delta, indexedGauges) {
     }
     return;
   } catch (error) {
+    out.error("Error in gauge_isNew():");
     out.error(error);
     return;
   }
@@ -456,6 +460,7 @@ function getPoolIdFromGauge(gauge) {
     const match = gauge.distribute_to.denom.match(/\d+/); // matches one or more digits
     return (match ? parseInt(match[0]) : NaN).toString(); // convert first matched digits to number
   } catch (error) {
+    out.error("Error in getPoolIdFromGauge():");
     out.error(error);
     return NaN.toString();
   }
@@ -504,6 +509,9 @@ function doTelegramNotifications(arrNotableEvents) {
           );
           txt += `\n⏰ Next Distribution in: <b>${timeUntilEpoch}</b>`;
         } catch (error) {
+          out.error(
+            "Error calling timeUntilEpoch_fromStartTime() from doTelegramNotifications() [in switch case NEW_EXTERNAL_GAUGE]:"
+          );
           out.error(error);
         }
         break;
@@ -517,6 +525,9 @@ function doTelegramNotifications(arrNotableEvents) {
           );
           txt += `\nReward distribution in: <b>${timeUntilEpoch}</b>`;
         } catch (error) {
+          out.error(
+            "Error calling timeUntilEpoch_fromStartTime() from doTelegramNotifications() [in switch case NEW_INTERNAL_GAUGE]:"
+          );
           out.error(error);
         }
         txt += `\nRemaining rewards: <b>${event.remainingDays} days</b>`;
@@ -544,10 +555,14 @@ async function callAPI(path) {
   try {
     res = await fetch(config.API.URL + path);
   } catch (error) {
+    out.error("Error fetching from API in callAPI():");
+    console.log(config.API.URL + path);
     out.error(error);
     try {
       res = await fetch(config.API.FAILOVER_URL + path);
     } catch (error) {
+      out.error("Error fetching from FAILOVER API in callAPI():");
+      console.log(config.API.FAILOVER_URL + path);
       out.error(error);
     }
   }
