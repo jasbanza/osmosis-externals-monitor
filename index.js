@@ -29,9 +29,10 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
   }
 
   // 1. Fetch Gauges... This also overwrites the "gauges.json" file.
+  let gauges = {};
   try {
     out.command("1. Get new gauges");
-    const gauges = await fetchGauges();
+    gauges = await fetchGauges();
     if (!gauges?.data) {
       out.error("gauges.json is empty");
       if (config.BEHAVIOR.IGNORE_EMPTY_DATA) {
@@ -76,10 +77,10 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
   }
 
   // 4. get previously cached indexed file and compare each gauge
+  const deltas = {};
   try {
     const oldIndexedGauges = get_oldIndexedGauges();
     const addedGauges = []; // array for any gauges that were added
-    const deltas = {};
     for (const id in indexedGauges) {
       // for every gauge, compare by id with old gauges...
       const gauge = indexedGauges[id];
