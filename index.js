@@ -23,12 +23,13 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
   try {
     await initializeFiles();
   } catch (error) {
+    out.error("Error calling initializeFiles():");
     out.error(error);
     process.exit(0);
   }
 
+  // 1. Fetch Gauges... This also overwrites the "gauges.json" file.
   try {
-    // 1. Fetch Gauges... This also overwrites the "gauges.json" file.
     out.command("1. Get new gauges");
     const gauges = await fetchGauges();
     if (!gauges?.data) {
@@ -43,29 +44,39 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
         process.exit(0);
       }
     }
+  } catch (error) {
+    out.error("Error saving gauges:");
+    out.error(error);
+  }
 
-    // 2. Get old gauges from gauges-old.json file
-    // out.command("2. Get old gauges");
-    // const oldGauges = await getOldGaugesFromCache();
-    // if (!oldGauges?.data) {
-    //   // if old gauges doesn't exist, clone it from new gauges and exit with no deltas
-    //   out.error("gauges-old.json is empty.");
+  // 2. Get old gauges from gauges-old.json file
+  // out.command("2. Get old gauges");
+  // const oldGauges = await getOldGaugesFromCache();
+  // if (!oldGauges?.data) {
+  //   // if old gauges doesn't exist, clone it from new gauges and exit with no deltas
+  //   out.error("gauges-old.json is empty.");
 
-    //   save_oldGauges();
-    //   out.info("Old and new files are the same! Exiting...");
-    //   process.exit(0);
-    // }
+  //   save_oldGauges();
+  //   out.info("Old and new files are the same! Exiting...");
+  //   process.exit(0);
+  // }
 
-    // 3. map to nested object with gaugeID as key (new "indexed" json file)
-    const indexedGauges = {};
+  // 3. map to nested object with gaugeID as key (new "indexed" json file)
+  const indexedGauges = {};
+  try {
     // build object
     gauges.data.forEach((gauge) => {
       indexedGauges[gauge.id] = gauge;
     });
     // save json file
     save_indexedGauges(indexedGauges);
+  } catch (error) {
+    out.error("Error indexing gauges:");
+    out.error(error);
+  }
 
-    // 4. get previously cached indexed file and compare each gauge
+  // 4. get previously cached indexed file and compare each gauge
+  try {
     const oldIndexedGauges = get_oldIndexedGauges();
     const addedGauges = []; // array for any gauges that were added
     const deltas = {};
@@ -92,29 +103,37 @@ out.command("Fetch gauges from Osmosis API and watch changes...");
     if (config.DELTAS.SEND_TO_FILE) {
       overwriteDeltasFile(deltas);
     }
+  } catch (error) {
+    out.error("Error creating deltas:");
+    out.error(error);
+  }
 
-    // 4. business logic from deltas
+  // 4. process deltas and create notable events
+  let arrNotableEvents = [];
+  try {
     out.command("4. process deltas");
-    const arrNotableEvents = await processDeltas(deltas, indexedGauges);
+    arrNotableEvents = await processDeltas(deltas, indexedGauges);
     overwriteNotableEventsFile({ data: arrNotableEvents });
+  } catch (error) {
+    out.error("Error parsing deltas to notable events:");
+    out.error(error);
+  }
 
-    // 7. overwrite old indexed gauges with new one
+  // 7. overwrite old indexed gauges with new one
+  try {
     save_oldIndexedGauges();
+  } catch (error) {
+    out.error("Error overwriting old indexed gauges with current one:");
+    out.error(error);
+  }
 
+  // TELEGRAM NOTIFICATIONS
+  try {
     if (config.TG_BOT.ACTIVE) {
       doTelegramNotifications(arrNotableEvents);
     }
-
-    /* EVERYTHING BELOW THIS LINE IS OLD AND NEEDS TO BE REFACTORED AND MOVED ABOVE */
-    /*
-    
-
-
-    // 5. overwrite old gauges with new gauges
-
-    save_oldGauges();
-    */
   } catch (error) {
+    out.error("Error processing Telegram notifications:");
     out.error(error);
   }
 })();
@@ -470,7 +489,7 @@ function doTelegramNotifications(arrNotableEvents) {
               coin.symbol
             }</b>`;
           }
-          
+
           if (event.coins.length > 1) {
             txt += `\n - `;
           }
@@ -642,6 +661,7 @@ async function getPoolInfo(poolId) {
       poolAssetSymbols: poolAssetSymbols.join(" / "),
     };
   } catch (error) {
+    out.error("Error in getPoolInfo():");
     out.error(error);
   }
 }
@@ -695,7 +715,7 @@ async function getAssetList() {
     let fileContent = fs.readFileSync(filename);
     assetlist = JSON.parse(fileContent);
     if (Object.keys(assetlist).length === 0) {
-      return fetchFromAPI();
+      return await fetchFromAPI();
     }
   } catch (err) {
     out.error(`Error parsing ${filename}`);
