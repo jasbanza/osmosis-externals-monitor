@@ -9,133 +9,131 @@ import jsondiffpatch from "jsondiffpatch";
 import { ConsoleLogColors } from "js-console-log-colors";
 import config from "./config/config.js";
 const out = new ConsoleLogColors();
-out.command("Fetch gauges from Osmosis API and watch changes...");
+
+const startTime = Date.now();
+let indexedPools = {}; // populate from cache or API later only if we need to.
 
 (async () => {
-  if (config.DEBUG) {
-    out.debug(
-      "config.DEBUG == true; All debugger messages will be shown & console will be preserved."
-    );
-  } else {
-    console.clear();
-  }
-
   try {
-    await initializeFiles();
-  } catch (error) {
-    out.error("Error calling initializeFiles():");
-    out.error(error);
-    process.exit(0);
-  }
+    if (config.DEBUG) {
+      out.debug(
+        "config.DEBUG == true; All debugger messages will be shown & console will be preserved."
+      );
+    } else {
+      console.clear();
+      out.command("Fetch gauges from Osmosis API and watch changes...");
+    }
 
-  // 1. Fetch Gauges... This also overwrites the "gauges.json" file.
-  let gauges = {};
-  try {
-    out.command("1. Get new gauges");
-    gauges = await fetchGauges();
-    if (!gauges?.data) {
-      out.error("gauges.json is empty");
-      if (config.BEHAVIOR.IGNORE_EMPTY_DATA) {
-        if (config.DEBUG) {
-          out.debug(
-            "config.BEHAVIOR.IGNORE_EMPTY_DATA == true ... continuing!"
-          );
+    try {
+      await initializeFiles();
+    } catch (error) {
+      out.error("Error calling initializeFiles():");
+      out.error(error);
+      process.exit(0);
+    }
+
+    // 1. Fetch Gauges... This also overwrites the "gauges.json" file.
+    let gauges = {};
+    try {
+      gauges = await fetchGauges();
+      if (!gauges?.data) {
+        out.error("gauges.json is empty");
+        if (config.BEHAVIOR.IGNORE_EMPTY_DATA) {
+          if (config.DEBUG) {
+            out.debug(
+              "config.BEHAVIOR.IGNORE_EMPTY_DATA == true ... continuing!"
+            );
+          }
+        } else {
+          process.exit(0);
         }
-      } else {
-        process.exit(0);
       }
+    } catch (error) {
+      out.error("Error saving gauges:");
+      out.error(error);
     }
-  } catch (error) {
-    out.error("Error saving gauges:");
-    out.error(error);
-  }
 
-  // 2. Get old gauges from gauges-old.json file
-  // out.command("2. Get old gauges");
-  // const oldGauges = await getOldGaugesFromCache();
-  // if (!oldGauges?.data) {
-  //   // if old gauges doesn't exist, clone it from new gauges and exit with no deltas
-  //   out.error("gauges-old.json is empty.");
+    // 3. map to nested object with gaugeID as key (new "indexed" json file)
+    const indexedGauges = {};
+    try {
+      // build object
+      gauges.data.forEach((gauge) => {
+        indexedGauges[gauge.id] = gauge;
+      });
+      // save json file
+      save_indexedGauges(indexedGauges);
+    } catch (error) {
+      out.error("Error indexing gauges:");
+      out.error(error);
+    }
 
-  //   save_oldGauges();
-  //   out.info("Old and new files are the same! Exiting...");
-  //   process.exit(0);
-  // }
-
-  // 3. map to nested object with gaugeID as key (new "indexed" json file)
-  const indexedGauges = {};
-  try {
-    // build object
-    gauges.data.forEach((gauge) => {
-      indexedGauges[gauge.id] = gauge;
-    });
-    // save json file
-    save_indexedGauges(indexedGauges);
-  } catch (error) {
-    out.error("Error indexing gauges:");
-    out.error(error);
-  }
-
-  // 4. get previously cached indexed file and compare each gauge
-  const deltas = {};
-  try {
-    const oldIndexedGauges = get_oldIndexedGauges();
-    const addedGauges = []; // array for any gauges that were added
-    for (const id in indexedGauges) {
-      // for every gauge, compare by id with old gauges...
-      const gauge = indexedGauges[id];
-      // if guage id doesn't exist in old gauges, we know it's new!
-      if (!oldIndexedGauges[id]) {
-        addedGauges.push(id);
+    // 4. get previously cached indexed file and compare each gauge
+    const deltas = {};
+    try {
+      const oldIndexedGauges = get_oldIndexedGauges();
+      const addedGauges = []; // array for any gauges that were added
+      for (const id in indexedGauges) {
+        // for every gauge, compare by id with old gauges...
+        const gauge = indexedGauges[id];
+        // if guage id doesn't exist in old gauges, we know it's new!
+        if (!oldIndexedGauges[id]) {
+          addedGauges.push(id);
+        }
+        // at this point in the loop, old gauge exists for this gauge id.
+        const oldGauge = oldIndexedGauges[id] || {};
+        // Lets compare and get deltas:
+        const delta = jsondiffpatch.diff(oldGauge, gauge);
+        if (delta) {
+          deltas[id] = delta;
+        }
       }
-      // at this point in the loop, old gauge exists for this gauge id.
-      const oldGauge = oldIndexedGauges[id] || {};
-      // Lets compare and get deltas:
-      const delta = jsondiffpatch.diff(oldGauge, gauge);
-      if (delta) {
-        deltas[id] = delta;
+      if (config.DELTAS.SEND_TO_STDOUT) {
+        out.debug("delta preview:");
+        console.log(deltas);
       }
-    }
-    if (config.DELTAS.SEND_TO_STDOUT) {
-      out.debug("delta preview:");
-      console.log(deltas);
+
+      if (config.DELTAS.SEND_TO_FILE) {
+        overwriteDeltasFile(deltas);
+      }
+    } catch (error) {
+      out.error("Error creating deltas:");
+      out.error(error);
     }
 
-    if (config.DELTAS.SEND_TO_FILE) {
-      overwriteDeltasFile(deltas);
+    // 4. process deltas and create notable events
+    let arrNotableEvents = [];
+    try {
+      out.command("Process deltas...");
+      arrNotableEvents = await processDeltas(deltas, indexedGauges);
+      overwriteNotableEventsFile({ data: arrNotableEvents });
+    } catch (error) {
+      out.error("Error parsing deltas to notable events:");
+      out.error(error);
+    }
+
+    // 7. overwrite old indexed gauges with new one
+    try {
+      save_oldIndexedGauges();
+    } catch (error) {
+      out.error("Error overwriting old indexed gauges with current one:");
+      out.error(error);
+    }
+
+    // TELEGRAM NOTIFICATIONS
+    try {
+      if (config.TG_BOT.ACTIVE) {
+        doTelegramNotifications(arrNotableEvents);
+      }
+    } catch (error) {
+      out.error("Error processing Telegram notifications:");
+      out.error(error);
     }
   } catch (error) {
-    out.error("Error creating deltas:");
+    out.error("Error in main (IIFE):");
     out.error(error);
-  }
-
-  // 4. process deltas and create notable events
-  let arrNotableEvents = [];
-  try {
-    out.command("4. process deltas");
-    arrNotableEvents = await processDeltas(deltas, indexedGauges);
-    overwriteNotableEventsFile({ data: arrNotableEvents });
-  } catch (error) {
-    out.error("Error parsing deltas to notable events:");
-    out.error(error);
-  }
-
-  // 7. overwrite old indexed gauges with new one
-  try {
-    save_oldIndexedGauges();
-  } catch (error) {
-    out.error("Error overwriting old indexed gauges with current one:");
-    out.error(error);
-  }
-
-  // TELEGRAM NOTIFICATIONS
-  try {
-    if (config.TG_BOT.ACTIVE) {
-      doTelegramNotifications(arrNotableEvents);
-    }
-  } catch (error) {
-    out.error("Error processing Telegram notifications:");
-    out.error(error);
+  } finally {
+    const endTime = Date.now();
+    console.log(`Total processing time: ${endTime - startTime} ms`);
   }
 })();
 
@@ -155,7 +153,7 @@ function isRateLimitCheckOk() {
 
 /**
  * fetch json data from remote API
- * @returns data [object]
+ * @returns {{}}
  */
 async function fetchGauges() {
   if (config.DEBUG) {
@@ -169,7 +167,6 @@ async function fetchGauges() {
   out.command("Checking local cache (rate limit check)...");
   if (isRateLimitCheckOk()) {
     out.success("Rate limit ok.");
-    out.command("Fetch gauges...");
   } else {
     out.warn(
       `Rate limit exceeded. Please wait ${config.API.RATE_LIMIT_SECONDS} seconds before trying again, or change the API.RATE_LIMIT_SECONDS in the config.json`
@@ -193,7 +190,10 @@ async function fetchGauges() {
     out.success("Data fetched from API!");
   }
 
-  // before we save the new gauges, lets update the "old" gauges to show the previous "new" gauges...
+  /* before we save the new gauges, lets update the "old" gauges to show the previous "new" gauges...
+   logic: calling this both at the start AND end of the process -> you wont get reattempts if the process fails. 
+   commenting it out would result in reattempts and possible duplicate notifications every time this script is run
+   */
   save_oldIndexedGauges();
 
   // 3. Write to file: gauges.json
@@ -204,10 +204,10 @@ async function fetchGauges() {
       );
     }
   } else {
-    out.command("Caching locally...");
+    out.command("save gauges...");
     try {
       fs.writeFileSync("./cache/gauges.json", JSON.stringify(data));
-      out.success("Cache updated!");
+      out.success("... updated ./cache/gauges.json");
     } catch (err) {
       out.error("Unable to save gauges.json:");
       out.error(err.message);
@@ -229,13 +229,13 @@ function save_indexedGauges(indexedGauges) {
       );
     }
   } else {
-    out.command("Caching indexed-gauges locally...");
+    out.command("save indexed-gauges...");
     try {
       fs.writeFileSync(
         "./cache/indexed-gauges.json",
         JSON.stringify(indexedGauges)
       );
-      out.success("./cache/indexed-gauges.json saved!");
+      out.success("... updated ./cache/indexed-gauges.json");
     } catch (err) {
       out.error("Unable to save indexed-gauges.json:");
       out.error(err.message);
@@ -255,13 +255,13 @@ function save_oldIndexedGauges() {
       );
     }
   } else {
-    out.command("Caching indexed-gauges-old locally...");
+    out.command("copy indexed-gauges > indexed-gauges-old ...");
     try {
       fs.copyFileSync(
         "./cache/indexed-gauges.json",
         "./cache/indexed-gauges-old.json"
       );
-      out.success("./cache/indexed-gauges-old.json saved!");
+      out.success("... updated ./cache/indexed-gauges-old.json");
     } catch (err) {
       out.error("Unable to save indexed-gauges-old.json:");
       out.error(err.message);
@@ -301,10 +301,10 @@ function overwriteDeltasFile(data) {
   if (config.DEBUG) {
     out.debug("called function: overwriteDeltasFile()");
   }
-  out.command("Saving deltas.json");
+  // out.command("Saving deltas.json");
   try {
     fs.writeFileSync("./cache/deltas.json", JSON.stringify(data));
-    out.success("Deltas updated!");
+    out.success("... updated deltas");
   } catch (err) {
     out.error("Unable to save deltas.json:");
     out.error(err.message);
@@ -316,10 +316,10 @@ function overwriteNotableEventsFile(data) {
   if (config.DEBUG) {
     out.debug("called function: overwriteNotableEventsFile()");
   }
-  out.command("Saving notable-events.json");
+  // out.command("Saving notable-events.json");
   try {
     fs.writeFileSync("./cache/notable-events.json", JSON.stringify(data));
-    out.success("Notable events updated!");
+    out.success("... updated notable events");
   } catch (err) {
     out.error("Unable to save notable-events.json:");
     out.error(err.message);
@@ -491,9 +491,11 @@ function doTelegramNotifications(arrNotableEvents) {
             if (event.coins.length > 1) {
               txt += `\n`;
             }
-            txt += `<b>${coin.amount / Math.pow(10, coin.exponent)} $${
-              coin.symbol
-            }</b>`;
+            txt += `<b>${
+              coin.exponent
+                ? coin.amount / Math.pow(10, coin.exponent)
+                : count.amount
+            } $${coin.symbol}</b>`;
           }
 
           if (event.coins.length > 1) {
@@ -554,10 +556,11 @@ function doTelegramNotifications(arrNotableEvents) {
 async function callAPI(path) {
   let res = {};
   try {
+    console.info(`Fetching: ${config.API.URL + path}`);
     res = await fetch(config.API.URL + path);
   } catch (error) {
     out.error("Error fetching from API in callAPI():");
-    console.log(config.API.URL + path);
+    out.info(config.API.URL + path);
     out.error(error);
     try {
       res = await fetch(config.API.FAILOVER_URL + path);
@@ -591,7 +594,7 @@ async function getCoinsInfo(coins) {
     // IBC ASSET
     if (coin.denom.includes("ibc/")) {
       let lookup = await assetLookupFromAssetlist(coin.denom);
-      if (!lookup.symbol) {
+      if (!lookup?.symbol) {
         lookup = await ibcBaseDenomLookup(coin.denom);
       }
       coinInfo = { ...coinInfo, ...lookup };
@@ -617,6 +620,8 @@ async function getCoinsInfo(coins) {
 }
 
 async function getPoolInfo(poolId) {
+  // TODO: make call to https://rest.cosmos.directory/osmosis/osmosis/gamm/v1beta1/pools and cache it, and cross reference.
+
   try {
     const json = await callAPI("/osmosis/gamm/v1beta1/pools/" + poolId).then(
       (res) => res.json()
@@ -624,52 +629,63 @@ async function getPoolInfo(poolId) {
 
     // get denoms from pool:
     let arrDenoms = [];
-    if (/* normal pool */ json?.pool?.pool_assets) {
-      for (const asset of json.pool.pool_assets) {
-        arrDenoms.push(asset.token.denom);
+    try {
+      if (/* normal pool */ json?.pool?.pool_assets) {
+        for (const asset of json.pool.pool_assets) {
+          arrDenoms.push(asset.token.denom);
+        }
+      } else if (/* stable pool */ json?.pool?.pool_liquidity) {
+        for (const asset of json.pool.pool_liquidity) {
+          arrDenoms.push(asset.denom);
+        }
       }
-    } else if (/* stable pool */ json?.pool?.pool_liquidity) {
-      for (const asset of json.pool.pool_liquidity) {
-        arrDenoms.push(asset.denom);
-      }
+    } catch (error) {
+      out.error("getPoolInfo() - Error getting denoms from pool");
+      out.error(error);
     }
+
     // get pretty names if possible
     const poolAssetSymbols = [];
-    for (const denom of arrDenoms) {
-      // pool can contain ibc tokens, tokenfactory tokens, gamms, native...
+    try {
+      for (const denom of arrDenoms) {
+        // pool can contain ibc tokens, tokenfactory tokens, gamms, native...
 
-      // NATIVE
-      if (denom == "uosmo") {
-        poolAssetSymbols.push("OSMO");
-        continue;
-      }
-      if (denom == "uion") {
-        poolAssetSymbols.push("ION");
-        continue;
-      }
-
-      // IBC ASSET
-      if (denom.includes("ibc/")) {
-        let lookup = await assetLookupFromAssetlist(denom);
-        if (!lookup?.symbol) {
-          lookup = await ibcBaseDenomLookup(denom);
+        // NATIVE
+        if (denom == "uosmo") {
+          poolAssetSymbols.push("OSMO");
+          continue;
+        }
+        if (denom == "uion") {
+          poolAssetSymbols.push("ION");
+          continue;
         }
 
-        poolAssetSymbols.push(lookup.symbol);
-        continue;
-      }
+        // IBC ASSET
+        if (denom.includes("ibc/")) {
+          let lookup = await assetLookupFromAssetlist(denom);
+          if (!lookup?.symbol) {
+            lookup = await ibcBaseDenomLookup(denom);
+          }
 
-      // GAMM
-      if (denom.includes("gamm/pool")) {
-        poolAssetSymbols.push(denom);
-        continue;
-      }
+          poolAssetSymbols.push(lookup.symbol);
+          continue;
+        }
 
-      // TOKENFACTORY
-      if (denom.includes("factory")) {
-        poolAssetSymbols.push(denom);
-        continue;
+        // GAMM
+        if (denom.includes("gamm/pool")) {
+          poolAssetSymbols.push(denom);
+          continue;
+        }
+
+        // TOKENFACTORY
+        if (denom.includes("factory")) {
+          poolAssetSymbols.push(denom);
+          continue;
+        }
       }
+    } catch (error) {
+      out.error("getPoolInfo() - Error getting token name from denom");
+      out.error(error);
     }
 
     // return the data
@@ -682,30 +698,143 @@ async function getPoolInfo(poolId) {
   }
 }
 
-async function ibcBaseDenomLookup(denom) {
-  const denom_hex = denom.slice(4);
-  const json = await callAPI(
-    "/ibc/apps/transfer/v1/denom_traces/" + denom_hex
-  ).then((res) => res.json());
+async function getIndexedPools() {
+  let indexedPools;
+  
+  return indexedPools;
+}
 
-  return { symbol: json?.denom_trace?.base_denom };
+function getPoolsFromCache() {}
+function cachePools() {}
+
+async function ibcBaseDenomLookup(denom) {
+  try {
+    const denom_hex = denom.slice(4);
+    const json = await callAPI(
+      "/ibc/apps/transfer/v1/denom_traces/" + denom_hex
+    ).then((res) => res.json());
+
+    return { symbol: json?.denom_trace?.base_denom };
+  } catch (error) {
+    out.error(`ibcBaseDenomLookup("${denom}")`);
+    out.error(error);
+  }
 }
 
 async function assetLookupFromAssetlist(denom) {
-  const assetlist = await getAssetList();
-  for (const asset of assetlist.assets) {
-    if (asset["base"] == denom) {
+  try {
+    const indexedAssetlist = await getIndexedAssetList();
+    const asset = indexedAssetlist[denom];
+
+    if (asset) {
+      // out.success("found " + asset?.symbol);
       return {
-        symbol: asset?.symbol,
+        symbol: asset?.symbol ? asset.symbol : asset.base,
         exponent: asset?.denom_units[1]?.exponent,
       };
     }
+  } catch (error) {
+    out.error(`assetLookupFromAssetlist("${denom}")`);
+    out.error(error);
+  }
+}
+
+async function getIndexedAssetList() {
+  let indexedAssetlist;
+  try {
+    if (isAssetlistExpired()) {
+      indexedAssetlist = await saveIndexedAssetListFromAssetlist();
+    } else {
+      try {
+        indexedAssetlist = getIndexedAssetListFromCache();
+        // check if its empty
+        if (Object.keys(indexedAssetlist).length === 0) {
+          indexedAssetlist = await saveIndexedAssetListFromAssetlist();
+        }
+      } catch (err) {
+        out.error(`Error in getIndexedAssetList()`);
+        out.error(err);
+        process.exit(0);
+      }
+    }
+    return indexedAssetlist;
+  } catch (error) {
+    out.error("Error in getIndexedAssetList()");
+    out.error(error);
+    process.exit(0);
+  }
+}
+
+function getIndexedAssetListFromCache() {
+  try {
+    let fileContent = fs.readFileSync("./cache/indexed-assetlist.json");
+    const indexedAssetlist = JSON.parse(fileContent);
+    return indexedAssetlist;
+  } catch (error) {
+    out.error("Error in getIndexedAssetListFromCache");
+    out.error(error);
+  }
+}
+
+function isAssetlistExpired() {
+  const stats = fs.statSync("./cache/indexed-assetlist.json");
+  return (
+    (Date.now() - stats.mtime.getTime()) / 1000 > config.ASSETLIST_CACHE_SECONDS
+  );
+}
+
+async function saveIndexedAssetListFromAssetlist() {
+  const assetlist = await getAssetList();
+  const indexedAssetlist = indexAssetlist(assetlist);
+  saveIndexedAssetList(indexedAssetlist);
+  return indexedAssetlist;
+}
+
+function saveIndexedAssetList(indexedAssetlist) {
+  const filename = "./cache/indexed-assetlist.json";
+  try {
+    fs.writeFileSync(filename, JSON.stringify(indexedAssetlist));
+    out.success(`... updated ${filename}`);
+  } catch (err) {
+    out.error(`Unable to save ${filename}:`);
+    out.error(err.message);
+    return;
+  }
+}
+
+// create the indexedAssetlist from assetlist.
+// this makes later referencing on a lot quicker.
+
+/**
+ * create the indexedAssetlist from assetlist. this makes later lookups a lot quicker.
+ * @param {assetlist}
+ * @returns {indexedAssetList} indexedAssetList
+ */
+function indexAssetlist(assetlist) {
+  let indexedAssetlist = {};
+  try {
+    for (const asset of assetlist.assets) {
+      try {
+        indexedAssetlist[asset.base] = {
+          symbol: asset?.symbol,
+          denom_units: asset?.denom_units[1],
+        };
+      } catch (error) {
+        out.error("Error in indexAssetlist()");
+        out.error(error);
+      }
+    }
+    return indexedAssetlist;
+  } catch (error) {
+    out.error(`Unable to index assetlist`);
+    out.error(error);
+    process.exit(0);
   }
 }
 
 /**
  * return assetlist from cache, or fetch from API if older than config.API.ASSETLIST_CACHE_SECONDS
- * @returns {Object} assetlist
+ * @returns {assetList} assetlist
  */
 async function getAssetList() {
   let assetlist;
@@ -718,7 +847,8 @@ async function getAssetList() {
       (Date.now() - stats.mtime.getTime()) / 1000 >
       config.ASSETLIST_CACHE_SECONDS
     ) {
-      return fetchFromAPI();
+      out.info("fetchFromAPI()");
+      return await fetchAssetlistFromAPI();
     }
   } catch (error) {
     out.error(`Unable to read ${filename}`);
@@ -731,7 +861,7 @@ async function getAssetList() {
     let fileContent = fs.readFileSync(filename);
     assetlist = JSON.parse(fileContent);
     if (Object.keys(assetlist).length === 0) {
-      return await fetchFromAPI();
+      return await fetchAssetlistFromAPI();
     }
   } catch (err) {
     out.error(`Error parsing ${filename}`);
@@ -741,7 +871,7 @@ async function getAssetList() {
 
   return assetlist;
 
-  async function fetchFromAPI() {
+  async function fetchAssetlistFromAPI() {
     let assetlist;
     if (config.DEBUG) {
       out.debug("Updating assetlist.json from API and saving to cache...");
@@ -762,7 +892,7 @@ async function getAssetList() {
       // save to cache
       try {
         fs.writeFileSync(filename, JSON.stringify(assetlist));
-        out.success("Assetlist updated!");
+        out.success(`... updated ${filename}`);
       } catch (err) {
         out.error("Unable to save assetlist.json:");
         out.error(err.message);
@@ -775,12 +905,13 @@ async function getAssetList() {
 
 async function initializeFiles() {
   const filenames = [
-    "./cache/assetlist.json",
-    "./cache/deltas.json",
-    "./cache/gauges.json",
-    "./cache/indexed-gauges-old.json",
-    "./cache/indexed-gauges.json",
-    "./cache/notable-events.json",
+    "./cache/assetlist.json" /* raw assetlist as per osmosis github */,
+    "./cache/indexed-assetlist.json" /* assetlist, but keys are denom bases, and most of the data is stripped.*/,
+    "./cache/deltas.json" /* gauge changes */,
+    "./cache/gauges.json" /* raw gauges as per osmosis api*/,
+    "./cache/indexed-gauges-old.json" /* record of outdated (previous) indexed gauges */,
+    "./cache/indexed-gauges.json" /* gauges, but keys are gauge id */,
+    "./cache/notable-events.json" /* latest events which should be notified*/,
   ];
 
   for (const filename of filenames) {
@@ -861,6 +992,8 @@ function timeUntilEpoch_fromStartTime(strStartTime) {
   function cleanUp(eventType) {
     out.warn(eventType);
     if (eventType == "exit") {
+      const endTime = Date.now();
+      out.info(`Total processing time: ${endTime - startTime} ms`);
       if (config.DEBUG) {
         console.log("");
         console.log("");

@@ -1,15 +1,6 @@
-GENERAL:
-done - initializeFiles
- - seperate try...catch for each step
+LP Incentives expiring soon:
+ - show which token incentive it is that is expiring.
 
-DENOMS:	
-done - get assetlist for cross-referencing names
-done - display pool assets names
-done - display pool reward token names
 
-API CALLS:
-(TEST) - if fail, use backup endpoint (cosmos.directory load balanced public nodes)
-
-INFRA:
-(TEST) - investigate crontab not working 
-(changed cache file write permissions ... need to test later)
+TODO: indexing of all pools in getIndexedPools()
+this will reduce the need to call each pool individually
