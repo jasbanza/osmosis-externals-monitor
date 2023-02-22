@@ -348,7 +348,7 @@ async function processDeltas(indexedDeltas, indexedGauges) {
 
       if (delta.filled_epochs) {
         // check if gauge is nearing expiration
-        const res = gauge_isNearExpiration(gauge, delta.filled_epochs);
+        const res = await gauge_isNearExpiration(gauge, delta.filled_epochs);
         if (res) {
           arrNotableEvents.push(res);
         }
@@ -774,14 +774,16 @@ async function getAssetList() {
 }
 
 async function initializeFiles() {
-  [
+  const filenames = [
     "./cache/assetlist.json",
     "./cache/deltas.json",
     "./cache/gauges.json",
     "./cache/indexed-gauges-old.json",
     "./cache/indexed-gauges.json",
     "./cache/notable-events.json",
-  ].forEach((filename) => {
+  ];
+
+  for (const filename of filenames) {
     try {
       if (!fs.existsSync(filename)) {
         fs.writeFileSync(filename, "{}");
@@ -792,7 +794,7 @@ async function initializeFiles() {
       out.error(error);
       process.exit(0);
     }
-  });
+  }
 }
 
 // this tells the telegram bot to send a message...
