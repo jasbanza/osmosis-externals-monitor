@@ -478,9 +478,21 @@ function doTelegramNotifications(arrNotableEvents) {
       case "NEAR_EXPIRATION":
         txt = `<i>⚠️ LP Incentives expiring soon!</i>`;
         txt += `\n\n🧪 Pool <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
+        if (event.coins) {
+          txt += `\n\nIncentives: `;
+          for (const coin of event.coins) {
+            if (event.coins.length > 1) {
+              txt += `\n`;
+            }
+            txt += `<b>$${coin.symbol}</b>`;
+          }
+          txt += `\n\n`;
+        }
+
         txt += `\nUnbonding duration: <b>${event.bondDurationDays} days</b>`;
         txt += `\nRemaining rewards: <b>${event.remainingDays} days</b>`;
         break;
+
       case "NEW_EXTERNAL_GAUGE":
         txt = `<i>New External Incentives Added!</i>`;
         txt += `\n\n🧪 Pool <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
@@ -518,6 +530,7 @@ function doTelegramNotifications(arrNotableEvents) {
           out.error(error);
         }
         break;
+
       case "NEW_INTERNAL_GAUGE":
         txt = `<i>💰 New Internal (🧪 $OSMO) Incentives Added!</i>`;
         txt += `\n\n<b>Pool <a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
@@ -535,6 +548,7 @@ function doTelegramNotifications(arrNotableEvents) {
         }
         txt += `\nRemaining rewards: <b>${event.remainingDays} days</b>`;
         break;
+
       case "NEW_SUPERFLUID_GAUGE":
         txt = `<i>🌟 Superfluid Staking Enabled!</i>`;
         txt += `\n\nPool: <b><a href="https://frontier.osmosis.zone/pool/${event.poolId}">${event.poolId} </a>(${event.poolAssetSymbols})</b>`;
@@ -700,7 +714,7 @@ async function getPoolInfo(poolId) {
 
 async function getIndexedPools() {
   let indexedPools;
-  
+
   return indexedPools;
 }
 

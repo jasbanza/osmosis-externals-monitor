@@ -1,5 +1,5 @@
 LP Incentives expiring soon:
- - show which token incentive it is that is expiring.
+done - show which token incentive it is that is expiring.
 
 
 TODO: indexing of all pools in getIndexedPools()
