@@ -187,6 +187,7 @@ async function fetchGauges() {
       .then((res) => res.json())
       .catch((err) => {
         out.error("unable to access API at this time.");
+        out.error(err);
         process.exit(0);
       });
     out.success("Gauges data fetched from API!");
@@ -648,23 +649,30 @@ async function callAPI(path, retries = 0) {
       out.error("Too many retry attempts");
       return res;
     }
-    console.info(`Fetching: ${config.API.URL + path}`);
+    console.info(`Fetching (from API): ${config.API.URL + path}`);
 
-    res = await fetch(config.API.URL + path).catch(async () => {
+    res = await fetchWithTimeout(config.API.URL + path, {
+      timeout: config.API.TIMEOUT_MS,
+    }).catch(async () => {
       out.error(
         `Error fetching from API in callAPI()${
           retries > 0 ? " (retry #" + retries + ")" : ""
         }:`
       );
-      return await fetch(config.API.FAILOVER_URL + path).catch(async () => {
+
+      console.info(
+        `Fetching (from Failover API): ${config.API.FAILOVER_URL + path}`
+      );
+      return await fetchWithTimeout(config.API.FAILOVER_URL + path, {
+        timeout: config.API.TIMEOUT_MS,
+      }).catch(async () => {
         out.error(
           `Error fetching from FAILOVER API in callAPI()${
             retries > 0 ? " (retry #" + retries + ")" : ""
           }:`
         );
-        return new Promise(resolve => {
+        return new Promise((resolve) => {
           setTimeout(() => {
-            
             if (retries <= config.TG_BOT.NOTIFICATION_RETRIES) {
               resolve(callAPI(path, retries + 1));
             } else {
@@ -1104,10 +1112,11 @@ async function getAssetList() {
       out.debug("Updating assetlist.json from API and saving to cache...");
     }
     try {
-      assetlist = await fetch(
+      assetlist = await fetchWithTimeout(
         "https://raw.githubusercontent.com/osmosis-labs/assetlists/main/osmosis-1/osmosis-1.assetlist.json",
         {
           cache: "reload",
+          timeout: config.API.TIMEOUT_MS,
         }
       ).then((res) => res.json());
     } catch (err) {
@@ -1168,7 +1177,7 @@ function doTelegramNotification(notification, retries = 0) {
       text: notification.txt,
     };
 
-    fetch(
+    fetchWithTimeout(
       `https://api.telegram.org/bot${config.TG_BOT.TOKEN}/sendMessage?parse_mode=html&disable_web_page_preview=true `,
       {
         method: "POST",
@@ -1176,6 +1185,7 @@ function doTelegramNotification(notification, retries = 0) {
         headers: {
           "Content-Type": "application/json",
         },
+        timeout: config.TG_BOT.NOTIFICATION_TIMEOUT_MS,
       }
     )
       .then((res) => res.json())
@@ -1190,6 +1200,7 @@ function doTelegramNotification(notification, retries = 0) {
           if (json?.parameters?.retry_after) {
             console.info(`retrying after ${json.parameters.retry_after}s`);
           }
+          
           setTimeout(
             () => {
               if (retries <= config.TG_BOT.NOTIFICATION_RETRIES) {
@@ -1200,7 +1211,7 @@ function doTelegramNotification(notification, retries = 0) {
             },
             json?.parameters?.retry_after
               ? json.parameters.retry_after * 1000
-              : 10000
+              : config.TG_BOT.NOTIFICATION_RETRY_INTERVAL_MS
           );
         } else {
           out.success(
@@ -1211,19 +1222,27 @@ function doTelegramNotification(notification, retries = 0) {
       .catch((err) => {
         out.error(err);
         if (retries <= config.TG_BOT.NOTIFICATION_RETRIES) {
-          setTimeout(
-            () => {
-              doTelegramNotification(notification, retries++);
-            },
-            json?.parameters?.retry_after
-              ? json.parameters.retry_after * 1000
-              : 10000
-          );
+          setTimeout(() => {
+            doTelegramNotification(notification, retries + 1);
+          }, config.TG_BOT.NOTIFICATION_RETRY_INTERVAL_MS);
         } else {
           //TODO: instead of logging the failed notifications, we should rather have a notification service running seperately from the notable-events which have a "notified" flag which is updated on success only.
         }
       });
   });
+}
+
+async function fetchWithTimeout(resource, options = {}) {
+  const { timeout = config.API.TIMEOUT_MS } = options;
+
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  const response = await fetch(resource, {
+    ...options,
+    signal: controller.signal,
+  });
+  clearTimeout(id);
+  return response;
 }
 
 function timeUntilEpoch_fromStartTime(strStartTime) {
