@@ -131,9 +131,6 @@ let indexedPools = {}; // populate from cache or API later only if we need to.
   } catch (error) {
     out.error("Error in main (IIFE):");
     out.error(error);
-  } finally {
-    const endTime = Date.now();
-    console.log(`Total processing time: ${endTime - startTime} ms`);
   }
 })();
 
@@ -187,7 +184,7 @@ async function fetchGauges() {
     data = await callAPI(
       "/osmosis/incentives/v1beta1/gauges?pagination.limit=9999"
     ).then((res) => res.json());
-    out.success("Data fetched from API!");
+    out.success("Gauges data fetched from API!");
   }
 
   /* before we save the new gauges, lets update the "old" gauges to show the previous "new" gauges...
@@ -372,14 +369,15 @@ async function gauge_isNearExpiration(gauge, filled_epochs) {
     if (gauge.is_perpetual) return false;
     const bondDurationDays = gauge.distribute_to.duration.slice(0, -1) / 86400;
     const remainingDays = gauge.num_epochs_paid_over - gauge.filled_epochs;
-    const poolId = getPoolIdFromGauge(gauge);
-
-    const poolInfo = await getPoolInfo(poolId);
     if (bondDurationDays == remainingDays) {
+      const poolId = getPoolIdFromGauge(gauge);
+      const poolInfo = await getPoolInfo(poolId);
+      const coins = await getCoinsInfo(gauge.coins);
       return {
         type: "NEAR_EXPIRATION",
         poolId: poolId,
         poolAssetSymbols: poolInfo.poolAssetSymbols,
+        coins: coins,
         bondDurationDays: bondDurationDays,
         remainingDays: remainingDays,
         gauge: gauge,
@@ -484,7 +482,13 @@ function doTelegramNotifications(arrNotableEvents) {
             if (event.coins.length > 1) {
               txt += `\n`;
             }
-            txt += `<b>$${coin.symbol}</b>`;
+            if (coin.symbol.startsWith("ft") && coin.symbol.length > 2) {
+              txt += `<b>Fan Token ${coin.symbol}</b>`;
+            } else if (coin.symbol.startsWith("ibc")) {
+              txt += `<b>${coin.symbol}</b>`;
+            } else {
+              txt += `<b>$${coin.symbol}</b>`;
+            }
           }
           txt += `\n\n`;
         }
@@ -503,11 +507,20 @@ function doTelegramNotifications(arrNotableEvents) {
             if (event.coins.length > 1) {
               txt += `\n`;
             }
-            txt += `<b>${
-              coin.exponent
-                ? coin.amount / Math.pow(10, coin.exponent)
-                : count.amount
-            } $${coin.symbol}</b>`;
+
+            if (coin.symbol.startsWith("ft") && coin.symbol.length > 2) {
+              txt += `<b>${coin.amount / Math.pow(10, 6)} Fan Tokens (${
+                coin.symbol
+              })</b>`;
+            } else if (coin.symbol.startsWith("ibc")) {
+              txt += `<b>${coin.amount} ${coin.symbol}</b>`;
+            } else {
+              txt += `<b>${
+                coin.exponent
+                  ? coin.amount / Math.pow(10, coin.exponent)
+                  : coin.amount
+              } $${coin.symbol}</b>`;
+            }
           }
 
           if (event.coins.length > 1) {
@@ -637,19 +650,22 @@ async function getPoolInfo(poolId) {
   // TODO: make call to https://rest.cosmos.directory/osmosis/osmosis/gamm/v1beta1/pools and cache it, and cross reference.
 
   try {
-    const json = await callAPI("/osmosis/gamm/v1beta1/pools/" + poolId).then(
-      (res) => res.json()
-    );
+    const indexedPools = await getIndexedPools();
+
+    // const json = await callAPI("/osmosis/gamm/v1beta1/pools/" + poolId).then(
+    //   (res) => res.json()
+    // );
 
     // get denoms from pool:
     let arrDenoms = [];
     try {
-      if (/* normal pool */ json?.pool?.pool_assets) {
-        for (const asset of json.pool.pool_assets) {
+      const pool = indexedPools[poolId];
+      if (/* normal pool */ pool?.pool_assets) {
+        for (const asset of pool.pool_assets) {
           arrDenoms.push(asset.token.denom);
         }
-      } else if (/* stable pool */ json?.pool?.pool_liquidity) {
-        for (const asset of json.pool.pool_liquidity) {
+      } else if (/* stable pool */ pool?.pool_liquidity) {
+        for (const asset of pool.pool_liquidity) {
           arrDenoms.push(asset.denom);
         }
       }
@@ -714,12 +730,109 @@ async function getPoolInfo(poolId) {
 
 async function getIndexedPools() {
   let indexedPools;
+  try {
+    // Do some checks first
+    if (isIndexedPoolsExpired()) {
+      indexedPools = saveIndexedPoolsFromPools();
+    } else {
+      try {
+        indexedPools = getIndexedPoolsFromCache();
+        // check if its empty
+        if (Object.keys(indexedPools).length === 0) {
+          indexedPools = saveIndexedPoolsFromPools();
+        }
+      } catch (err) {
+        out.error(`Error in getIndexedPools()`);
+        out.error(err);
+        process.exit(0);
+      }
+    }
+    return indexedPools;
+  } catch (error) {
+    out.error("Error in getIndexedPools()");
+    out.error(error);
+    process.exit(0);
+  }
+}
 
+function isIndexedPoolsExpired() {
+  const stats = fs.statSync("./cache/indexed-pools.json");
+  return (
+    (Date.now() - stats.mtime.getTime()) / 1000 > config.POOLS_CACHE_SECONDS
+  );
+}
+
+function getIndexedPoolsFromCache() {
+  try {
+    let fileContent = fs.readFileSync("./cache/indexed-pools.json");
+    const indexedPools = JSON.parse(fileContent);
+    return indexedPools;
+  } catch (error) {
+    out.error("Error in getIndexedPoolsFromCache");
+    out.error(error);
+  }
+}
+
+/**
+ * @returns {indexedPools} indexedPools;
+ */
+async function saveIndexedPoolsFromPools() {
+  const pools = await fetchPoolsFromAPI();
+  const indexedPools = indexPools(pools);
+  saveIndexedPools(indexedPools);
   return indexedPools;
 }
 
-function getPoolsFromCache() {}
-function cachePools() {}
+async function fetchPoolsFromAPI() {
+  if (config.DEBUG) {
+    out.debug("called function:fetchPoolsFromAPI()");
+  }
+  try {
+    out.info("Fetching pools from API (this may take a moment)...");
+    const data = await callAPI(
+      "/osmosis/gamm/v1beta1/pools?pagination.limit=9999"
+    ).then((res) => res.json());
+    out.success("Pools data fetched from API!");
+    return data?.pools ? data.pools : {};
+  } catch (error) {
+    out.error("Unable to fetch pools from API:");
+    out.error(err.message);
+  }
+}
+
+function indexPools(pools) {
+  let indexedPools = {};
+  try {
+    for (const pool of pools) {
+      try {
+        indexedPools[pool.id] = {
+          pool_assets: pool?.pool_assets,
+          pool_liquidity: pool?.pool_liquidity,
+        };
+      } catch (error) {
+        out.error("Error in indexPools()");
+        out.error(error);
+      }
+    }
+    return indexedPools;
+  } catch (error) {
+    out.error(`Unable to index pools`);
+    out.error(error);
+    process.exit(0);
+  }
+}
+
+function saveIndexedPools(indexedPools) {
+  const filename = "./cache/indexed-pools.json";
+  try {
+    fs.writeFileSync(filename, JSON.stringify(indexedPools));
+    out.success(`... updated ${filename}`);
+  } catch (err) {
+    out.error(`Unable to save ${filename}:`);
+    out.error(err.message);
+    return;
+  }
+}
 
 async function ibcBaseDenomLookup(denom) {
   try {
@@ -920,11 +1033,12 @@ async function getAssetList() {
 async function initializeFiles() {
   const filenames = [
     "./cache/assetlist.json" /* raw assetlist as per osmosis github */,
-    "./cache/indexed-assetlist.json" /* assetlist, but keys are denom bases, and most of the data is stripped.*/,
     "./cache/deltas.json" /* gauge changes */,
     "./cache/gauges.json" /* raw gauges as per osmosis api*/,
-    "./cache/indexed-gauges-old.json" /* record of outdated (previous) indexed gauges */,
+    "./cache/indexed-assetlist.json" /* assetlist, but keys are denom bases, and most of the data is stripped.*/,
     "./cache/indexed-gauges.json" /* gauges, but keys are gauge id */,
+    "./cache/indexed-gauges-old.json" /* record of outdated (previous) indexed gauges */,
+    "./cache/indexed-pools.json" /* pools, but keys are pool-ids */,
     "./cache/notable-events.json" /* latest events which should be notified*/,
   ];
 
@@ -968,6 +1082,7 @@ function doTelegramNotification(text = "") {
       .then((json) => {
         if (!json?.ok) {
           out.error("Unable to send Telegram notification:");
+          console.log(json);
         } else {
           out.success("Telegram notification sent!");
         }

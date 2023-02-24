@@ -1,6 +1,2 @@
-LP Incentives expiring soon:
-done - show which token incentive it is that is expiring.
-
-
-TODO: indexing of all pools in getIndexedPools()
-this will reduce the need to call each pool individually
+TODO: 
+- post-epoch single-message summary notification of expired gauges?
