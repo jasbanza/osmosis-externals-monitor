@@ -26,9 +26,9 @@ let indexedPools = {}; // populate from cache or API later only if we need to.
 
     try {
       await initializeFiles();
-    } catch (error) {
+    } catch (err) {
       out.error("Error calling initializeFiles():");
-      out.error(error);
+      out.error(err);
       process.exit(0);
     }
 
@@ -48,9 +48,9 @@ let indexedPools = {}; // populate from cache or API later only if we need to.
           process.exit(0);
         }
       }
-    } catch (error) {
+    } catch (err) {
       out.error("Error saving gauges:");
-      out.error(error);
+      out.error(err);
     }
 
     // 3. map to nested object with gaugeID as key (new "indexed" json file)
@@ -62,9 +62,9 @@ let indexedPools = {}; // populate from cache or API later only if we need to.
       });
       // save json file
       save_indexedGauges(indexedGauges);
-    } catch (error) {
+    } catch (err) {
       out.error("Error indexing gauges:");
-      out.error(error);
+      out.error(err);
     }
 
     // 4. get previously cached indexed file and compare each gauge
@@ -95,9 +95,9 @@ let indexedPools = {}; // populate from cache or API later only if we need to.
       if (config.DELTAS.SEND_TO_FILE) {
         overwriteDeltasFile(deltas);
       }
-    } catch (error) {
+    } catch (err) {
       out.error("Error creating deltas:");
-      out.error(error);
+      out.error(err);
     }
 
     // 4. process deltas and create notable events
@@ -106,17 +106,17 @@ let indexedPools = {}; // populate from cache or API later only if we need to.
       out.command("Process deltas...");
       arrNotableEvents = await processDeltas(deltas, indexedGauges);
       overwriteNotableEventsFile({ data: arrNotableEvents });
-    } catch (error) {
+    } catch (err) {
       out.error("Error parsing deltas to notable events:");
-      out.error(error);
+      out.error(err);
     }
 
     // 7. overwrite old indexed gauges with new one
     try {
       save_oldIndexedGauges();
-    } catch (error) {
+    } catch (err) {
       out.error("Error overwriting old indexed gauges with current one:");
-      out.error(error);
+      out.error(err);
     }
 
     // TELEGRAM NOTIFICATIONS
@@ -124,13 +124,13 @@ let indexedPools = {}; // populate from cache or API later only if we need to.
       if (config.TG_BOT.ACTIVE) {
         doTelegramNotifications(arrNotableEvents);
       }
-    } catch (error) {
+    } catch (err) {
       out.error("Error processing Telegram notifications:");
-      out.error(error);
+      out.error(err);
     }
-  } catch (error) {
+  } catch (err) {
     out.error("Error in main (IIFE):");
-    out.error(error);
+    out.error(err);
   }
 })();
 
@@ -142,8 +142,8 @@ function isRateLimitCheckOk() {
     const stats = fs.statSync("./cache/gauges.json");
     let ageInSeconds = (Date.now() - stats.mtime.getTime()) / 1000;
     return ageInSeconds > config.API.RATE_LIMIT_SECONDS;
-  } catch (error) {
-    out.error(error);
+  } catch (err) {
+    out.error(err);
     return true;
   }
 }
@@ -183,7 +183,12 @@ async function fetchGauges() {
     out.info("Fetching new data from API (this may take a moment)...");
     data = await callAPI(
       "/osmosis/incentives/v1beta1/gauges?pagination.limit=9999"
-    ).then((res) => res.json());
+    )
+      .then((res) => res.json())
+      .catch((err) => {
+        out.error("unable to access API at this time.");
+        process.exit(0);
+      });
     out.success("Gauges data fetched from API!");
   }
 
@@ -383,9 +388,9 @@ async function gauge_isNearExpiration(gauge, filled_epochs) {
         gauge: gauge,
       };
     }
-  } catch (error) {
+  } catch (err) {
     out.error("Error in gauge_isNearExpiration():");
-    out.error(error);
+    out.error(err);
     return;
   }
 }
@@ -447,9 +452,9 @@ async function gauge_isNew(delta, indexedGauges) {
       }
     }
     return;
-  } catch (error) {
+  } catch (err) {
     out.error("Error in gauge_isNew():");
-    out.error(error);
+    out.error(err);
     return;
   }
 }
@@ -458,9 +463,9 @@ function getPoolIdFromGauge(gauge) {
   try {
     const match = gauge.distribute_to.denom.match(/\d+/); // matches one or more digits
     return (match ? parseInt(match[0]) : NaN).toString(); // convert first matched digits to number
-  } catch (error) {
+  } catch (err) {
     out.error("Error in getPoolIdFromGauge():");
-    out.error(error);
+    out.error(err);
     return NaN.toString();
   }
 }
@@ -469,7 +474,7 @@ function doTelegramNotifications(arrNotableEvents) {
   if (config.DEBUG) {
     out.debug("called function: doTelegramNotifications()");
   }
-
+  const arrTelegramNotifications = [];
   arrNotableEvents.forEach((event) => {
     let txt = null;
     switch (event.type) {
@@ -536,11 +541,11 @@ function doTelegramNotifications(arrNotableEvents) {
             event.gauge.start_time
           );
           txt += `\n⏰ Next Distribution in: <b>${timeUntilEpoch}</b>`;
-        } catch (error) {
+        } catch (err) {
           out.error(
             "Error calling timeUntilEpoch_fromStartTime() from doTelegramNotifications() [in switch case NEW_EXTERNAL_GAUGE]:"
           );
-          out.error(error);
+          out.error(err);
         }
         break;
 
@@ -553,11 +558,11 @@ function doTelegramNotifications(arrNotableEvents) {
             event.gauge.start_time
           );
           txt += `\nReward distribution in: <b>${timeUntilEpoch}</b>`;
-        } catch (error) {
+        } catch (err) {
           out.error(
             "Error calling timeUntilEpoch_fromStartTime() from doTelegramNotifications() [in switch case NEW_INTERNAL_GAUGE]:"
           );
-          out.error(error);
+          out.error(err);
         }
         txt += `\nRemaining rewards: <b>${event.remainingDays} days</b>`;
         break;
@@ -570,9 +575,65 @@ function doTelegramNotifications(arrNotableEvents) {
         break;
     }
     if (txt) {
-      doTelegramNotification(txt);
+      arrTelegramNotifications.push(txt);
     }
   });
+  processTelegramNotifications(arrTelegramNotifications);
+}
+
+/**
+ * Puts notifications into batches, and delays their sending.
+ * @param {*} arrTelegramNotifications
+ */
+function processTelegramNotifications(arrTelegramNotifications) {
+  // add 50ms between calls.
+  // limit to 20 calls per minute.
+  let arrBatches = [];
+  let currentBatch = [];
+  const totalNotifications = arrTelegramNotifications.length;
+
+  // create batches
+  for (const telegramNotification of arrTelegramNotifications) {
+    if (currentBatch.length < config.TG_BOT.NOTIFICATION_BATCH_LIMIT) {
+      currentBatch.push({
+        batchNumber: arrBatches.length + 1,
+        notificationNumber: currentBatch.length + 1,
+        txt: telegramNotification,
+      });
+    } else {
+      arrBatches.push(currentBatch);
+      currentBatch = [];
+    }
+  }
+  if (currentBatch.length > 0) {
+    arrBatches.push(currentBatch);
+  }
+
+  // set interval to call each batch
+  for (let index = 0; index < arrBatches.length; index++) {
+    const batch = arrBatches[index];
+    setTimeout(() => {
+      processTelegramNotificationBatch(batch);
+    }, config.TG_BOT.NOTIFICATION_BATCH_INTERVAL_MS * index);
+    out.info(
+      `Processing notification batch of size: ${batch.length} in ${
+        config.TG_BOT.NOTIFICATION_BATCH_INTERVAL_MS * index
+      }ms`
+    );
+  }
+}
+
+function processTelegramNotificationBatch(arrTelegramNotificationBatch) {
+  out.command(
+    `Process notification batch of size ${arrTelegramNotificationBatch.length}`
+  );
+
+  for (let index = 0; index < arrTelegramNotificationBatch.length; index++) {
+    const notification = arrTelegramNotificationBatch[index];
+    setTimeout(() => {
+      doTelegramNotification(notification);
+    }, config.TG_BOT.NOTIFICATION_INTERVAL_MS * index);
+  }
 }
 
 /**
@@ -580,22 +641,61 @@ function doTelegramNotifications(arrNotableEvents) {
  * @param {String} path path to REST method after the baseURL
  * @returns {Promise} unresolved fetch promise
  */
-async function callAPI(path) {
+async function callAPI(path, retries = 0) {
   let res = {};
   try {
-    console.info(`Fetching: ${config.API.URL + path}`);
-    res = await fetch(config.API.URL + path);
-  } catch (error) {
-    out.error("Error fetching from API in callAPI():");
-    out.info(config.API.URL + path);
-    out.error(error);
-    try {
-      res = await fetch(config.API.FAILOVER_URL + path);
-    } catch (error) {
-      out.error("Error fetching from FAILOVER API in callAPI():");
-      console.log(config.API.FAILOVER_URL + path);
-      out.error(error);
+    if (retries > config.API.RETRY_ATTEMPTS) {
+      out.error("Too many retry attempts");
+      return res;
     }
+    console.info(`Fetching: ${config.API.URL + path}`);
+
+    res = await fetch(config.API.URL + path).catch(async () => {
+      out.error(
+        `Error fetching from API in callAPI()${
+          retries > 0 ? " (retry #" + retries + ")" : ""
+        }:`
+      );
+      return await fetch(config.API.FAILOVER_URL + path).catch(async () => {
+        out.error(
+          `Error fetching from FAILOVER API in callAPI()${
+            retries > 0 ? " (retry #" + retries + ")" : ""
+          }:`
+        );
+        return new Promise(resolve => {
+          setTimeout(() => {
+            
+            if (retries <= config.TG_BOT.NOTIFICATION_RETRIES) {
+              resolve(callAPI(path, retries + 1));
+            } else {
+              //TODO: instead of logging the failed notifications, we should rather have a notification service running seperately from the notable-events which have a "notified" flag which is updated on success only.
+            }
+          }, config.API.RETRY_INTERVAL_MS);
+        });
+      });
+    });
+  } catch (err) {
+    out.error(
+      `Error fetching from API in callAPI()${
+        retries > 0 ? " (retry #" + retries + ")" : ""
+      }:`
+    );
+    out.error(err);
+
+    // out.error(
+    //   `Error fetching from API in callAPI()${
+    //     retries > 0 ? " (retry #" + retries + ")" : ""
+    //   }:`
+    // );
+    // out.info(config.API.URL + path);
+    // out.error(err);
+    // try {
+    //   res = await fetch(config.API.FAILOVER_URL + path).catch;
+    // } catch (err) {
+    //   out.error("Error fetching from FAILOVER API in callAPI():");
+    //   console.log(config.API.FAILOVER_URL + path);
+    //   out.error(err);
+    // }
   }
   return res;
 }
@@ -669,9 +769,9 @@ async function getPoolInfo(poolId) {
           arrDenoms.push(asset.denom);
         }
       }
-    } catch (error) {
+    } catch (err) {
       out.error("getPoolInfo() - Error getting denoms from pool");
-      out.error(error);
+      out.error(err);
     }
 
     // get pretty names if possible
@@ -713,18 +813,18 @@ async function getPoolInfo(poolId) {
           continue;
         }
       }
-    } catch (error) {
+    } catch (err) {
       out.error("getPoolInfo() - Error getting token name from denom");
-      out.error(error);
+      out.error(err);
     }
 
     // return the data
     return {
       poolAssetSymbols: poolAssetSymbols.join(" / "),
     };
-  } catch (error) {
+  } catch (err) {
     out.error("Error in getPoolInfo():");
-    out.error(error);
+    out.error(err);
   }
 }
 
@@ -748,9 +848,9 @@ async function getIndexedPools() {
       }
     }
     return indexedPools;
-  } catch (error) {
+  } catch (err) {
     out.error("Error in getIndexedPools()");
-    out.error(error);
+    out.error(err);
     process.exit(0);
   }
 }
@@ -767,9 +867,9 @@ function getIndexedPoolsFromCache() {
     let fileContent = fs.readFileSync("./cache/indexed-pools.json");
     const indexedPools = JSON.parse(fileContent);
     return indexedPools;
-  } catch (error) {
+  } catch (err) {
     out.error("Error in getIndexedPoolsFromCache");
-    out.error(error);
+    out.error(err);
   }
 }
 
@@ -794,7 +894,7 @@ async function fetchPoolsFromAPI() {
     ).then((res) => res.json());
     out.success("Pools data fetched from API!");
     return data?.pools ? data.pools : {};
-  } catch (error) {
+  } catch (err) {
     out.error("Unable to fetch pools from API:");
     out.error(err.message);
   }
@@ -809,15 +909,15 @@ function indexPools(pools) {
           pool_assets: pool?.pool_assets,
           pool_liquidity: pool?.pool_liquidity,
         };
-      } catch (error) {
+      } catch (err) {
         out.error("Error in indexPools()");
-        out.error(error);
+        out.error(err);
       }
     }
     return indexedPools;
-  } catch (error) {
+  } catch (err) {
     out.error(`Unable to index pools`);
-    out.error(error);
+    out.error(err);
     process.exit(0);
   }
 }
@@ -842,9 +942,9 @@ async function ibcBaseDenomLookup(denom) {
     ).then((res) => res.json());
 
     return { symbol: json?.denom_trace?.base_denom };
-  } catch (error) {
+  } catch (err) {
     out.error(`ibcBaseDenomLookup("${denom}")`);
-    out.error(error);
+    out.error(err);
   }
 }
 
@@ -860,9 +960,9 @@ async function assetLookupFromAssetlist(denom) {
         exponent: asset?.denom_units[1]?.exponent,
       };
     }
-  } catch (error) {
+  } catch (err) {
     out.error(`assetLookupFromAssetlist("${denom}")`);
-    out.error(error);
+    out.error(err);
   }
 }
 
@@ -885,9 +985,9 @@ async function getIndexedAssetList() {
       }
     }
     return indexedAssetlist;
-  } catch (error) {
+  } catch (err) {
     out.error("Error in getIndexedAssetList()");
-    out.error(error);
+    out.error(err);
     process.exit(0);
   }
 }
@@ -897,9 +997,9 @@ function getIndexedAssetListFromCache() {
     let fileContent = fs.readFileSync("./cache/indexed-assetlist.json");
     const indexedAssetlist = JSON.parse(fileContent);
     return indexedAssetlist;
-  } catch (error) {
+  } catch (err) {
     out.error("Error in getIndexedAssetListFromCache");
-    out.error(error);
+    out.error(err);
   }
 }
 
@@ -946,15 +1046,15 @@ function indexAssetlist(assetlist) {
           symbol: asset?.symbol,
           denom_units: asset?.denom_units[1],
         };
-      } catch (error) {
+      } catch (err) {
         out.error("Error in indexAssetlist()");
-        out.error(error);
+        out.error(err);
       }
     }
     return indexedAssetlist;
-  } catch (error) {
+  } catch (err) {
     out.error(`Unable to index assetlist`);
-    out.error(error);
+    out.error(err);
     process.exit(0);
   }
 }
@@ -977,9 +1077,9 @@ async function getAssetList() {
       out.info("fetchFromAPI()");
       return await fetchAssetlistFromAPI();
     }
-  } catch (error) {
+  } catch (err) {
     out.error(`Unable to read ${filename}`);
-    out.error(error);
+    out.error(err);
     process.exit(0);
   }
 
@@ -1010,7 +1110,7 @@ async function getAssetList() {
           cache: "reload",
         }
       ).then((res) => res.json());
-    } catch (error) {
+    } catch (err) {
       out.error("Unable to fetch assetlist from github:");
       out.error(err.message);
     }
@@ -1048,16 +1148,16 @@ async function initializeFiles() {
         fs.writeFileSync(filename, "{}");
         out.success(`File '${filename}' created successfully!`);
       }
-    } catch (error) {
+    } catch (err) {
       out.error(`initializeFiles: ${filename}`);
-      out.error(error);
+      out.error(err);
       process.exit(0);
     }
   }
 }
 
 // this tells the telegram bot to send a message...
-function doTelegramNotification(text = "") {
+function doTelegramNotification(notification, retries = 0) {
   if (config.DEBUG) {
     out.debug("called function: doTelegramNotification()");
   }
@@ -1065,7 +1165,7 @@ function doTelegramNotification(text = "") {
   config.TG_BOT.GROUP_IDS.forEach((groupId) => {
     const json_body = {
       chat_id: groupId,
-      text: text,
+      text: notification.txt,
     };
 
     fetch(
@@ -1081,10 +1181,46 @@ function doTelegramNotification(text = "") {
       .then((res) => res.json())
       .then((json) => {
         if (!json?.ok) {
-          out.error("Unable to send Telegram notification:");
+          out.error(
+            `Unable to send Telegram notification${
+              retries > 0 ? " (retry #" + retries + ")" : ""
+            }:`
+          );
           console.log(json);
+          if (json?.parameters?.retry_after) {
+            console.info(`retrying after ${json.parameters.retry_after}s`);
+          }
+          setTimeout(
+            () => {
+              if (retries <= config.TG_BOT.NOTIFICATION_RETRIES) {
+                doTelegramNotification(notification, retries++);
+              } else {
+                //TODO: instead of logging the failed notifications, we should rather have a notification service running seperately from the notable-events which have a "notified" flag which is updated on success only.
+              }
+            },
+            json?.parameters?.retry_after
+              ? json.parameters.retry_after * 1000
+              : 10000
+          );
         } else {
-          out.success("Telegram notification sent!");
+          out.success(
+            `Telegram notification successful - [batch #${notification.batchNumber}; msg #${notification.notificationNumber}]`
+          );
+        }
+      })
+      .catch((err) => {
+        out.error(err);
+        if (retries <= config.TG_BOT.NOTIFICATION_RETRIES) {
+          setTimeout(
+            () => {
+              doTelegramNotification(notification, retries++);
+            },
+            json?.parameters?.retry_after
+              ? json.parameters.retry_after * 1000
+              : 10000
+          );
+        } else {
+          //TODO: instead of logging the failed notifications, we should rather have a notification service running seperately from the notable-events which have a "notified" flag which is updated on success only.
         }
       });
   });

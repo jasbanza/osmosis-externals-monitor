@@ -1,2 +1,4 @@
 TODO: 
 - post-epoch single-message summary notification of expired gauges?
+- delay running if its epoch or close to epoch time...
+- instead of logging the failed notifications, we should rather have a notification service running seperately from the notable-events which have a "notified" flag which is updated on success only.
